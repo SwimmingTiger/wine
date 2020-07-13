@@ -103,8 +103,10 @@ static int wine_drivers_rb_compare( const void *key, const struct wine_rb_entry 
 {
     const struct wine_driver *driver = WINE_RB_ENTRY_VALUE( entry, const struct wine_driver, entry );
     const UNICODE_STRING *k = key;
+    LONG result;
 
-    return RtlCompareUnicodeString( k, &driver->driver_obj.DriverName, TRUE );
+    result = RtlCompareUnicodeString( k, &driver->driver_obj.DriverName, TRUE );
+    return result;
 }
 
 static struct wine_rb_tree wine_drivers = { wine_drivers_rb_compare };
@@ -149,7 +151,26 @@ struct object_header
 static void free_kernel_object( void *obj )
 {
     struct object_header *header = (struct object_header *)obj - 1;
-    HeapFree( GetProcessHeap(), 0, header );
+    forget_kernel_struct(header);
+    HeapFree( GetProcessHeap(), 0, TO_USER(header) );
+    //HeapFree( GetProcessHeap(), 0, header );
+}
+
+static void kernel_object_accessed(void *obj, DWORD offset, BOOL write, void *ip)
+{
+    struct object_header *header = obj;
+
+    //if ((BYTE*)ip >= ((BYTE*)kernel_object_accessed - 0x10000) && (BYTE*)ip < ((BYTE*)kernel_object_accessed + 0x10000))
+    //    return;
+
+    if (offset >= sizeof(*header))
+    {
+        if (offset - sizeof(*header) == 356)
+            TRACE("bruh = %x\n", * ((BYTE*)obj + offset));
+        TRACE("\1kernel %s object %p accessed at offset %u\n", header->type ? debugstr_w(header->type->name) : "?", header + 1, offset - sizeof(*header));
+    }
+    else
+        TRACE("\1kernel object header %p accessed at offset %u\n", header, offset);
 }
 
 void *alloc_kernel_object( POBJECT_TYPE type, HANDLE handle, SIZE_T size, LONG ref )
@@ -158,6 +179,11 @@ void *alloc_kernel_object( POBJECT_TYPE type, HANDLE handle, SIZE_T size, LONG r
 
     if (!(header = HeapAlloc( GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(*header) + size)) )
         return NULL;
+
+    if (!(header = register_kernel_struct(header, sizeof(*header) + size, kernel_object_accessed)))
+    {
+        return NULL;
+    }
 
     if (handle)
     {
